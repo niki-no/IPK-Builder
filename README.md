@@ -5,7 +5,7 @@
 
 ## 编译说明
 
-Girhub Actions在线编译Openwrt的插件，默认使用kiddin9/kwrt-packages源码！rugu
+Girhub Actions在线编译Openwrt的插件，默认使用kiddin9/kwrt-packages源码！
 1. 选择需要的架构（如不存在，自行添加后再选择）
 
 2. 如需同时编译多个插件，自行编辑Build-IPK文件或在输入框输入多个软件包的名字（用空格或,或;隔开）；如果没输入包名，同时Build-IPK也没有包名，将默认编译somemoo' packages仓库里面全部luci-app；如果你的设备不在列表，在输入框输入设备架构（多个架构用空格或,或;隔开）
