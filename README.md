@@ -1,6 +1,6 @@
 # 编译状态
 
-[![IPK-Builder](https://github.com/niki-no/OpenWrt-IPK-Build/actions/workflows/IPK-Build.yml/badge.svg)](https://github.com/niki-no/IPK-Build/actions/workflows/IPK-Build.yml)
+[![IPK-Builder](https://github.com/niki-no/IPK-Builder/actions/workflows/IPK-Build.yml/badge.svg)](https://github.com/niki-no/IPK-Builder/actions/workflows/IPK-Build.yml)
 [![](https://img.shields.io/github/license/mashape/apistatus.svg)](https://github.com/niki-no/OpenWrt)
 
 ## 编译说明
