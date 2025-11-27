@@ -203,7 +203,7 @@ jobs:
         run: |
           shopt -s extglob
           cd OpenWrt-${{ env.arch-path }}
-          cp -rf ../App/. .
+          cp -rf ../custom/. .
           
           REPO_URL="${{ matrix.repo_url }}"
           BRANCH="${{ matrix.branch }}"
