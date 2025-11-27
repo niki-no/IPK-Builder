@@ -1,3 +1,4 @@
+#!/bin/bash
 sed -i 's/msgstr "Lucky"/msgstr "反向代理"/g' package/luci-app-lucky/po/zh-cn/lucky.po
 sed -i 's/\bservices\b/vpn/g' $(grep -rl '\bservices\b' package/luci-app-lucky)
 echo -----------------END-------------------
