@@ -1,0 +1,24 @@
+# scripts/Archs 说明：
+# - 每行可包含多个架构，用空格/逗号/分号分隔
+# - 架构格式必须为: target_subtarget
+# - 示例：x86/64 ramips/mt7621,ipq40xx/generic
+
+# 格式说明：每行可包含多个架构（支持任意分隔符）
+x86/64 rockchip/armv8 mvebu/cortexa9
+
+# ARM系列
+bcm27xx/bcm2711 ipq807x/generic ipq60xx/generic 
+mediatek/mt7622 mediatek/mt7986 sunxi/cortexa53
+
+# MIPS系列
+ramips/mt7621 ramips/mt7620 ramips/mt76x8 
+ath79/generic lantiq/xrx200
+
+# 高通系列
+ipq40xx/generic ipq806x/generic ipq50xx/generic
+
+# 博通系列
+bcm4908/generic bcm53xx/generic
+
+# 其他架构
+realtek/rtl838x realtek/rtl930x zynq/generic
