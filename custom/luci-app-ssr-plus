@@ -4,4 +4,4 @@ echo -e "msgstr \"跨越大河\"" >> package/luci-app-ssr-plus/po/zh_Hans/ssr-pl
 sed -i '/ShadowSocksR Plus+/s/10/4/g' package/luci-app-ssr-plus/luasrc/controller/shadowsocksr.lua
 sed -i 's/ShadowSocksR Plus+ 设置/SSR Plus设置/g' package/luci-app-ssr-plus/po/zh_Hans/ssr-plus.po
 sed -i 's/\bservices\b/vpn/g' $(grep -rl '\bservices\b' package/luci-app-ssr-plus)
-echo -----------------START-------------------
+echo -----------------END-------------------
