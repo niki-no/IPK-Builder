@@ -1,0 +1,268 @@
+# =================================================
+# OpenWrt IPK 多仓库构建工作流
+# 特性: 支持多仓库回退/架构选择/增量编译
+# 许可证: MIT  
+# 作者: vison.v
+# =================================================
+
+name: IPK-Builder
+
+on: 
+  workflow_dispatch:
+    inputs:
+      Model:
+        description: '选择设备（自动解析架构）'
+        required: true
+        default: 'Mini PC'
+        type: choice
+        options: ['General PC', 'Mini PC', 'Proxmox VE VM', 'VMware VM', 'Xiaomi 4A Gigabit Edition', 'Xiaomi R4A', 'Redmi AX6', 'Redmi AX6000', 'Xiaomi AX3600', 'Xiaomi AX9000', 'ASUS RT-ACRH17', 'ASUS RT-AC58U', 'ASUS RT-AX86U', 'ASUS RT-AX88U', 'Netgear R7800', 'Netgear XR500', 'Netgear WAX202', 'Linksys WRT1900ACS', 'Linksys WRT3200ACM', 'Linksys EA7500v2', 'GL.iNet MT1300', 'GL.iNet AX1800', 'Phicomm K3', 'Newifi D2', 'HiWiFi HC5962', 'Raspberry Pi 4B']
+      Arch:
+        description: '输入架构 (例如: x86/64)'
+        required: false
+        type: string
+      Package:
+        description: '输入包名 (例如: luci-app-adguardhome)'
+        required: false
+        type: string
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    if: github.event.repository.owner.id == github.event.sender.id || !github.event.sender.id
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      model_name: ${{ steps.parse-model.outputs.model_name }}
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 解析输入模式
+        id: parse-input
+        run: |
+          ARCH_INPUT="${{ github.event.inputs.Arch }}"
+          USE_ARCH_MODE=false
+          
+          if [ -n "$ARCH_INPUT" ]; then
+            IFS=',; ' read -ra ARCH_ARRAY <<< "$ARCH_INPUT"
+            SANITIZED_ARCHS=()
+            for arch in "${ARCH_ARRAY[@]}"; do
+              if [[ ! "$arch" =~ ^[a-z0-9_-]+\/[a-z0-9_-]+$ ]]; then
+                echo "::error::无效架构格式: $arch"
+                exit 1
+              fi
+              SANITIZED_ARCHS+=("$arch")
+            done
+            echo "archs=${SANITIZED_ARCHS[*]}" >> $GITHUB_OUTPUT
+            USE_ARCH_MODE=true
+          fi
+
+          echo "use_arch_mode=$USE_ARCH_MODE" >> $GITHUB_OUTPUT
+
+      - name: 解析设备架构
+        id: parse-model
+        if: ${{ !fromJson(steps.parse-input.outputs.use_arch_mode) }}
+        run: |
+          MODEL_INPUT="${{ github.event.inputs.Model }}"
+          if [ ! -f "scripts/Models" ]; then
+            echo "::error::架构映射文件不存在"
+            exit 1
+          fi
+          FOUND_ARCH=""
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            line_clean=$(echo "$line" | sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            [ -z "$line_clean" ] && continue
+            
+            IFS=':' read -ra parts <<< "$line_clean"
+            if [ ${#parts[@]} -ne 2 ]; then continue; fi
+            
+            devices=$(echo "${parts[0]}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            target_arch=$(echo "${parts[1]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            
+            while read -r device; do
+              if [ "$device" == "$MODEL_INPUT" ]; then
+                if [ -n "$FOUND_ARCH" ]; then
+                  echo "::error::设备重复定义: $MODEL_INPUT"
+                  exit 1
+                fi
+                FOUND_ARCH="$target_arch"
+              fi
+            done <<< "$devices"
+          done < scripts/Models
+          
+          [ -z "$FOUND_ARCH" ] && echo "::error::未找到设备对应架构" && exit 1
+          echo "model_name=$(echo "$MODEL_INPUT" | tr ' ' '-')" >> $GITHUB_OUTPUT
+          echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT
+
+      - name: 生成构建矩阵
+        id: set-matrix
+        run: |
+          if ${{ steps.parse-input.outputs.use_arch_mode }}; then
+            IFS=' ' read -ra ARCH_ARRAY <<< "${{ steps.parse-input.outputs.archs }}"
+          else
+            ARCH_ARRAY=("${{ steps.parse-model.outputs.arch }}")  
+          fi
+
+          PACKAGE_INPUT="${{ github.event.inputs.Package }}"
+          PKG_SOURCE="$PACKAGE_INPUT"
+          if [ -z "$PKG_SOURCE" ]; then
+            PKG_SOURCE=$(grep -vE '^#|^$' Build-IPK | tr '\n' ' ')
+          fi
+          IFS=',; ' read -ra PKG_ARRAY <<< "$PKG_SOURCE"
+
+          declare -a REPOS
+          if [ -f "repo" ]; then
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              line_clean=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/#.*//')
+              if [[ -n "$line_clean" && "$line_clean" == *,* ]]; then
+                REPOS+=("$line_clean")
+              fi
+            done < repo
+          fi
+
+          if [ ${#REPOS[@]} -eq 0 ]; then
+            REPOS=("https://github.com/kiddin9/kwrt-packages,main")
+          fi
+
+          for repo_entry in "${REPOS[@]}"; do
+            IFS=',' read -r repo_url branch <<< "$repo_entry"
+            repo_name=$(basename "$repo_url" .git)
+            git clone -b "$branch" --depth=1 "$repo_url" "$repo_name"
+          done
+
+          declare -a matrix_entries
+          for arch in "${ARCH_ARRAY[@]}"; do
+            for pkg in "${PKG_ARRAY[@]}"; do
+              found=false
+              for repo_entry in "${REPOS[@]}"; do
+                IFS=',' read -r repo_url branch <<< "$repo_entry"
+                repo_name=$(basename "$repo_url" .git)
+                if [ -d "$repo_name/$pkg" ]; then
+                  matrix_entries+=("{\"target\":\"$pkg\",\"repo_url\":\"$repo_url\",\"branch\":\"$branch\",\"arch\":\"$arch\"}")
+                  found=true
+                  break
+                fi
+              done
+              if [ "$found" = false ]; then
+                echo "::warning::未在任何仓库中找到包: $pkg"
+              fi
+            done
+          done
+
+          if [ ${#matrix_entries[@]} -eq 0 ]; then
+            echo "::error::无有效包可构建"
+            exit 1
+          fi
+
+          echo "matrix=[$(IFS=,; echo "${matrix_entries[*]}")]" >> $GITHUB_OUTPUT
+
+  build:
+    name: Build ${{ matrix.target }} (${{ matrix.arch }})
+    runs-on: ubuntu-22.04
+    needs: matrix
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.matrix.outputs.matrix) }}
+      fail-fast: false
+    env:
+      arch_path: ${{ matrix.arch }}
+      model_name: ${{ needs.matrix.outputs.model_name }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 加载环境
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq --no-install-recommends \
+            aria2 build-essential clang llvm flex g++ gawk gcc-multilib gettext \
+            git libncurses5-dev libssl-dev python3 python3-pyelftools python3-setuptools \
+            rsync unzip zstd zlib1g-dev jq subversion qemu-utils ccache \
+            libelf-dev device-tree-compiler libgmp3-dev libmpc-dev  
+          git clone --depth=1 https://github.com/openwrt-dev/po2lmo
+          (cd po2lmo && sudo make && sudo make install)
+
+      - name: 设置变量
+        id: ENV
+        run: |
+          echo "date=$(date +'%m.%d')" >> $GITHUB_ENV
+          echo "arch-path=$(echo ${{ matrix.arch }} | tr '/' '-')" >> $GITHUB_ENV  # 直接使用矩阵中的arch值
+
+      - name: 准备SDK
+        run: |
+          SDK_URL1="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ env.arch_path }}/immortalwrt-sdk-24.10-SNAPSHOT-${{ env.arch-path }}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          SDK_URL2="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ env.arch_path }}/immortalwrt-sdk-24.10-SNAPSHOT-${{ env.arch-path }}_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
+          wget --spider -q "$SDK_URL1" && wget "$SDK_URL1" || wget "$SDK_URL2"
+          mkdir OpenWrt-${{ env.arch-path }} && tar -I 'zstd -d' -xf immortalwrt-*.tar.zst -C OpenWrt-${{ env.arch-path }} --strip-components 1 && rm immortalwrt-*.tar.zst
+
+      - name: 克隆项目
+        run: |
+          shopt -s extglob
+          cd OpenWrt-${{ env.arch-path }}
+          cp -rf ../App/. .
+          
+          REPO_URL="${{ matrix.repo_url }}"
+          BRANCH="${{ matrix.branch }}"
+          git clone -b "$BRANCH" --depth=1 "$REPO_URL" packages
+          mv packages/* package/ && rm -rf packages
+  
+          if [ -f "${{ matrix.target }}" ]; then  
+            chmod +x "${{ matrix.target }}"  
+            /bin/bash ./"${{ matrix.target }}"  
+          else  
+            echo "${{ matrix.target }} 文件不存在，无法执行。"  
+          fi  
+          
+          ./scripts/feeds update -a
+          rm -rf feeds/luci/{applications,collections,protocols,themes,libs,docs,contrib}
+          rm -rf feeds/luci/modules/!(luci-base)
+          rm -rf feeds/packages/!(lang|libs|devel|utils|net|multimedia)
+          rm -rf feeds/packages/multimedia/!(gstreamer1|ffmpeg)
+          rm -rf feeds/packages/net/!(mosquitto|curl)
+          rm -rf feeds/base/package/firmware
+          rm -rf feeds/base/package/network/!(services|utils)
+          rm -rf feeds/base/package/network/services/!(ppp)
+          rm -rf feeds/base/package/system/!(opkg|ubus|uci|ca-certificates)
+          rm -rf feeds/base/package/kernel/!(cryptodev-linux)
+          sed -i '/	refresh_config();/d' scripts/feeds
+
+          ./scripts/feeds install ${{ matrix.target }}
+          rm -rf feeds/packages/lang/golang
+          git clone https://github.com/sbwml/packages_lang_golang -b 24.x feeds/packages/lang/golang
+          echo "CONFIG_PACKAGE_${{ matrix.target }}=y" >> .config
+
+      - name: 下载依赖
+        id: package
+        run: |
+          cd OpenWrt-${{ env.arch-path }}
+          make defconfig
+      
+      - name: 开始编译
+        run: |
+          cd OpenWrt-${{ env.arch-path }}
+          make package/${{ matrix.target }}/compile -j$(nproc) V=s
+
+      - name: 准备 ipk
+        run: |
+          cd OpenWrt-${{ env.arch-path }}
+          mkdir -p ./artifact/IPK
+          find ./bin/packages/*/*/ -maxdepth 1 -type f -name "*.ipk" | xargs -i mv -f {} ./artifact/IPK/
+          cd ./artifact/IPK
+          echo "IPK=$PWD" >> $GITHUB_ENV    
+      
+      - name: 上传 ipk
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.model_name }}-${{ env.arch-path }}-${{ matrix.target }}
+          path: ${{ env.IPK }}
+
+      - name: Delete workflow runs  
+        uses: Mattraks/delete-workflow-runs@main  
+        continue-on-error: true  
+        with:  
+          retain_days: 1  
+          keep_minimum_runs: 0 
