@@ -1,5 +1,5 @@
 #!/bin/bash
 sed -i '/SmartDNS/s/60/9/g' package/luci-app-smartdns/luasrc/controller/smartdns.lua
-sed -i '/msgid "SmartDNS"/{n;s/SmartDNS/DNS 加速/;}' package/luci-app-smartdns/po/zh_Hans/smartdns.po
-sed -i 's/\bservices\b/vpn/g' $(grep -rl '\bservices\b' package/luci-app-smartdns)
+sed -i '/msgid "SmartDNS"/{n;s/"SmartDNS"/"DNS 加速"/;}' package/luci-app-smartdns/po/zh_Hans/smartdns.po
+sed -i 's/services/vpn/g' $(grep -rl 'services' package/luci-app-smartdns)
 echo -----------------END-------------------
