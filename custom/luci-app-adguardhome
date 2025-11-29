@@ -1,5 +1,5 @@
 #!/bin/bash
 sed -i 's/= 10/= 6/g' package/luci-app-adguardhome/luasrc/controller/AdGuardHome.lua
 sed -i 's/AdGuard Home/广告过滤/g' package/luci-app-adguardhome/luasrc/controller/AdGuardHome.lua
-sed -i 's/\bservices\b/vpn/g' $(grep -rl '\bservices\b' package/luci-app-adguardhome)
+sed -i 's/services/vpn/g' $(grep -rl 'services' package/luci-app-adguardhome)
 echo -----------------END-------------------
