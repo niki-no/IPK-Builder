@@ -1,4 +1,4 @@
 #!/bin/bash
 sed -i 's/Bypass/世界,你好/g' package/luci-app-bypass/luasrc/controller/bypass.lua
-sed -i 's/\bservices\b/vpn/g' $(grep -rl '\bservices\b' package/luci-app-bypass)
+sed -i 's/services/vpn/g' $(grep -rl '\bservices\b' package/luci-app-bypass)
 echo -----------------END-------------------
