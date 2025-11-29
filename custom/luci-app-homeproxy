@@ -1,4 +1,4 @@
 #!/bin/bash
-sed -i '/msgid "HomeProxy"/{n;s/HomeProxy/DNS 加速/;}' package/luci-app-homeproxy/po/zh_Hans/homeproxy.po
-sed -i 's/\bservices\b/vpn/g' $(grep -rl '\bservices\b' package/luci-app-homeproxy)
+sed -i '/msgid "HomeProxy"/{n;s/"HomeProxy"/"DNS 加速"/;}' package/luci-app-homeproxy/po/zh_Hans/homeproxy.po
+sed -i 's/services/vpn/g' $(grep -rl 'services' package/luci-app-homeproxy)
 echo -----------------END-------------------
