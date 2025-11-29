@@ -1,5 +1,5 @@
 #!/bin/bash
-sed -i '/msgid "OpenClash"/{n;s/OpenClash/世界,你好/;}' package/luci-app-openclash/po/zh_Hans/openclash.zh-cn.po
+sed -i '/msgid "OpenClash"/{n;s/"OpenClash"/"世界,你好"/;}' package/luci-app-openclash/po/zh_Hans/openclash.zh-cn.po
 sed -i '/OpenClash/s/50/2/g' package/luci-app-openclash/luasrc/controller/openclash.lua
-sed -i 's/\bservices\b/vpn/g' $(grep -rl '\bservices\b' package/luci-app-openclash)
+sed -i 's/services/vpn/g' $(grep -rl 'services' package/luci-app-openclash)
 echo -----------------END-------------------
