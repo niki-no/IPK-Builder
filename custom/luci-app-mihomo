@@ -1,4 +1,4 @@
 #!/bin/bash
 sed -i '/msgid "MihomoTProxy"/{n;s/msgstr ""/msgstr "翻越长城"/;}' package/luci-app-mihomo/po/zh_Hans/mihomo.po
-sed -i 's/\bservices\b/vpn/g' $(grep -rl '\bservices\b' package/luci-app-mihomo)
+sed -i 's/services/vpn/g' $(grep -rl 'services' package/luci-app-mihomo)
 echo -----------------END-------------------
