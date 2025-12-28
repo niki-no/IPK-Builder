@@ -152,6 +152,34 @@ jobs:
           # 克隆并查找包
           declare -a FOUND_PACKAGES
           
+          # 函数：获取包的实际名称
+          get_package_name() {
+            local pkg_dir="$1"
+            local repo_name="$2"
+            local original_pkg="$3"
+            
+            # 获取相对路径
+            local rel_path=$(realpath --relative-to="$repo_name" "$pkg_dir")
+            
+            # 如果相对路径是 "."，说明整个仓库就是一个包
+            if [ "$rel_path" = "." ]; then
+              # 尝试从Makefile中提取包名
+              if [ -f "$pkg_dir/Makefile" ]; then
+                local pkg_name=$(grep -E '^PKG_NAME\s*[:?]=' "$pkg_dir/Makefile" 2>/dev/null | head -1 | sed -E 's/^PKG_NAME\s*[:?]=//' | xargs)
+                if [ -n "$pkg_name" ]; then
+                  echo "$pkg_name"
+                  return 0
+                fi
+              fi
+              # 使用仓库名作为包名
+              local repo_base=$(basename "$repo_name")
+              echo "$repo_base"
+            else
+              # 正常情况：使用目录名
+              echo "$(basename "$rel_path")"
+            fi
+          }
+          
           # 函数：在目录中查找包
           find_package_in_dir() {
             local repo_dir="$1"
@@ -189,6 +217,16 @@ jobs:
               found_dir=$(find "$repo_dir" -type d -name "*${pkg_keyword}*" -exec test -f "{}/Makefile" \; -print 2>/dev/null | head -1)
               if [ -n "$found_dir" ]; then
                 echo "$found_dir"
+                return 0
+              fi
+            fi
+            
+            # 特殊处理：检查整个仓库是否就是一个包（Makefile在仓库根目录）
+            if [ -f "$repo_dir/Makefile" ]; then
+              # 检查Makefile中是否包含有效的包定义
+              if grep -qE '^PKG_NAME\s*[:?]=' "$repo_dir/Makefile" 2>/dev/null || 
+                 grep -qE '^include.*build' "$repo_dir/Makefile" 2>/dev/null; then
+                echo "$repo_dir"
                 return 0
               fi
             fi
@@ -241,9 +279,12 @@ jobs:
               if [ -n "$pkg_dir" ]; then
                 echo "找到包 $pkg 在: $pkg_dir"
                 
+                # 获取包的实际名称
+                pkg_base_name=$(get_package_name "$pkg_dir" "$repo_name" "$pkg")
+                echo "包实际名称: $pkg_base_name"
+                
                 # 获取相对路径
                 rel_path=$(realpath --relative-to="$repo_name" "$pkg_dir")
-                pkg_base_name=$(basename "$rel_path")
                 
                 # 添加到找到的包列表
                 FOUND_PACKAGES+=("{\"pkg_name\":\"$pkg\",\"found_name\":\"$pkg_base_name\",\"rel_path\":\"$rel_path\",\"repo_url\":\"$repo_url\",\"branch\":\"$branch\",\"repo_name\":\"$repo_name\"}")
@@ -294,6 +335,12 @@ jobs:
             repo_url=$(echo "$FOUND_PACKAGES_JSON" | jq -r ".[$i].repo_url")
             branch=$(echo "$FOUND_PACKAGES_JSON" | jq -r ".[$i].branch")
             repo_name=$(echo "$FOUND_PACKAGES_JSON" | jq -r ".[$i].repo_name")
+            
+            # 验证包名有效性
+            if [ -z "$found_name" ] || [ "$found_name" = "." ] || [ "$found_name" = ".." ]; then
+              echo "::warning::包 $pkg_name 的实际名称无效，使用原始名称"
+              found_name="$pkg_name"
+            fi
             
             for arch in "${ARCH_ARRAY[@]}"; do
               matrix_entries+=("{\"target\":\"$found_name\",\"original_name\":\"$pkg_name\",\"pkg_path\":\"$rel_path\",\"repo_url\":\"$repo_url\",\"branch\":\"$branch\",\"arch\":\"$arch\",\"repo_name\":\"$repo_name\"}")
@@ -357,9 +404,28 @@ jobs:
           
           REPO_URL="${{ matrix.repo_url }}"
           BRANCH="${{ matrix.branch }}"
-          git clone -b "$BRANCH" --depth=1 "$REPO_URL" packages
-          mv packages/* package/ && rm -rf packages
-  
+          REPO_NAME=$(basename "$REPO_URL" .git)
+          
+          # 克隆仓库到临时目录
+          git clone -b "$BRANCH" --depth=1 "$REPO_URL" temp_repo
+          
+          # 根据相对路径处理包文件
+          if [ "${{ matrix.pkg_path }}" = "." ]; then
+            # 整个仓库就是一个包
+            echo "处理单包仓库: $REPO_NAME"
+            # 将整个仓库内容复制到package目录
+            cp -rf temp_repo/* package/
+          else
+            # 正常的多包仓库
+            echo "处理多包仓库中的包: ${{ matrix.pkg_path }}"
+            # 将仓库根目录复制到packages目录
+            mkdir -p package/packages
+            cp -rf temp_repo/* package/packages/
+          fi
+          
+          # 清理临时目录
+          rm -rf temp_repo
+          
           if [ -f "${{ matrix.target }}" ]; then  
             chmod +x "${{ matrix.target }}"  
             /bin/bash ./"${{ matrix.target }}"  
@@ -380,7 +446,15 @@ jobs:
           rm -rf feeds/base/package/kernel/!(cryptodev-linux)
           sed -i '/	refresh_config();/d' scripts/feeds
 
-          ./scripts/feeds install ${{ matrix.target }}
+          # 安装包（根据仓库结构调整）
+          if [ "${{ matrix.pkg_path }}" = "." ]; then
+            # 单包仓库：直接安装包名
+            ./scripts/feeds install ${{ matrix.target }}
+          else
+            # 多包仓库：可能需要带路径
+            ./scripts/feeds install -p packages ${{ matrix.target }}
+          fi
+          
           rm -rf feeds/packages/lang/golang
           git clone https://github.com/sbwml/packages_lang_golang -b 24.x feeds/packages/lang/golang
           echo "CONFIG_PACKAGE_${{ matrix.target }}=y" >> .config
@@ -394,7 +468,14 @@ jobs:
       - name: 开始编译
         run: |
           cd OpenWrt-${{ env.arch-path }}
-          make package/${{ matrix.target }}/compile -j$(nproc) V=s
+          # 根据包路径调整编译目标
+          if [ "${{ matrix.pkg_path }}" = "." ]; then
+            # 单包仓库
+            make package/${{ matrix.target }}/compile -j$(nproc) V=s
+          else
+            # 多包仓库
+            make package/packages/${{ matrix.target }}/compile -j$(nproc) V=s
+          fi
 
       - name: 准备 ipk
         run: |
