@@ -118,11 +118,14 @@ jobs:
             REPOS=("https://github.com/kiddin9/kwrt-packages,main")
           fi
           
-          # 将仓库列表存储为JSON
+          # 将仓库列表存储为JSON（确保正确的JSON格式）
           REPO_JSON="["
           for i in "${!REPOS[@]}"; do
             IFS=',' read -r repo_url branch <<< "${REPOS[$i]}"
-            REPO_JSON+="{\"url\":\"$repo_url\",\"branch\":\"$branch\"}"
+            # 转义特殊字符
+            repo_url=$(echo "$repo_url" | jq -R .)
+            branch=$(echo "$branch" | jq -R .)
+            REPO_JSON+="{\"url\":$repo_url,\"branch\":$branch}"
             if [ $i -lt $((${#REPOS[@]}-1)) ]; then
               REPO_JSON+=","
             fi
@@ -150,7 +153,7 @@ jobs:
           echo "仓库信息: $REPO_JSON"
           
           # 克隆并查找包
-          declare -a FOUND_PACKAGES
+          declare -a FOUND_PACKAGES_RAW
           
           # 函数：获取包的实际名称
           get_package_name() {
@@ -235,7 +238,13 @@ jobs:
           }
           
           # 解析JSON获取仓库列表
-          REPO_COUNT=$(echo "$REPO_JSON" | jq '. | length')
+          REPO_COUNT=$(echo "$REPO_JSON" | jq -r '. | length' 2>/dev/null || echo "0")
+          if [ "$REPO_COUNT" = "0" ]; then
+            echo "无法解析仓库JSON"
+            echo "原始JSON: $REPO_JSON"
+            exit 1
+          fi
+          
           for i in $(seq 0 $(($REPO_COUNT - 1))); do
             repo_url=$(echo "$REPO_JSON" | jq -r ".[$i].url")
             branch=$(echo "$REPO_JSON" | jq -r ".[$i].branch")
@@ -260,9 +269,8 @@ jobs:
               
               # 检查包是否已找到
               already_found=false
-              for found_pkg in "${FOUND_PACKAGES[@]}"; do
-                found_name=$(echo "$found_pkg" | jq -r '.pkg_name')
-                if [ "$found_name" = "$pkg" ]; then
+              for found_pkg in "${FOUND_PACKAGES_RAW[@]}"; do
+                if echo "$found_pkg" | grep -q "\"pkg_name\":\"$pkg\""; then
                   already_found=true
                   break
                 fi
@@ -286,8 +294,9 @@ jobs:
                 # 获取相对路径
                 rel_path=$(realpath --relative-to="$repo_name" "$pkg_dir")
                 
-                # 添加到找到的包列表
-                FOUND_PACKAGES+=("{\"pkg_name\":\"$pkg\",\"found_name\":\"$pkg_base_name\",\"rel_path\":\"$rel_path\",\"repo_url\":\"$repo_url\",\"branch\":\"$branch\",\"repo_name\":\"$repo_name\"}")
+                # 构建JSON字符串（手动构建，避免特殊字符问题）
+                entry="{\"pkg_name\":\"$pkg\",\"found_name\":\"$pkg_base_name\",\"rel_path\":\"$rel_path\",\"repo_url\":\"$repo_url\",\"branch\":\"$branch\",\"repo_name\":\"$repo_name\"}"
+                FOUND_PACKAGES_RAW+=("$entry")
               else
                 echo "未在仓库 $repo_name 中找到包: $pkg"
               fi
@@ -295,9 +304,27 @@ jobs:
           done
           
           # 输出找到的包
-          echo "总共找到 ${#FOUND_PACKAGES[@]} 个包"
-          if [ ${#FOUND_PACKAGES[@]} -gt 0 ]; then
-            echo "found_packages=[$(IFS=,; echo "${FOUND_PACKAGES[*]}")]" >> $GITHUB_OUTPUT
+          echo "总共找到 ${#FOUND_PACKAGES_RAW[@]} 个包"
+          if [ ${#FOUND_PACKAGES_RAW[@]} -gt 0 ]; then
+            # 构建有效的JSON数组
+            json_array="["
+            for i in "${!FOUND_PACKAGES_RAW[@]}"; do
+              json_array+="${FOUND_PACKAGES_RAW[$i]}"
+              if [ $i -lt $((${#FOUND_PACKAGES_RAW[@]}-1)) ]; then
+                json_array+=","
+              fi
+            done
+            json_array+="]"
+            
+            # 验证JSON格式
+            if echo "$json_array" | jq empty 2>/dev/null; then
+              echo "found_packages=$json_array" >> $GITHUB_OUTPUT
+              echo "有效的包JSON: $json_array"
+            else
+              echo "::error::生成的JSON格式无效"
+              echo "原始数据: $json_array"
+              exit 1
+            fi
           else
             echo "::warning::未找到任何包"
           fi
@@ -316,8 +343,17 @@ jobs:
           
           # 获取找到的包
           FOUND_PACKAGES_JSON='${{ steps.find-packages.outputs.found_packages }}'
+          echo "原始包JSON: $FOUND_PACKAGES_JSON"
+          
           if [ -z "$FOUND_PACKAGES_JSON" ] || [ "$FOUND_PACKAGES_JSON" = "[]" ]; then
             echo "::error::无有效包可构建"
+            exit 1
+          fi
+          
+          # 验证JSON格式
+          if ! echo "$FOUND_PACKAGES_JSON" | jq empty 2>/dev/null; then
+            echo "::error::包JSON格式无效"
+            echo "无效JSON: $FOUND_PACKAGES_JSON"
             exit 1
           fi
           
@@ -343,7 +379,9 @@ jobs:
             fi
             
             for arch in "${ARCH_ARRAY[@]}"; do
-              matrix_entries+=("{\"target\":\"$found_name\",\"original_name\":\"$pkg_name\",\"pkg_path\":\"$rel_path\",\"repo_url\":\"$repo_url\",\"branch\":\"$branch\",\"arch\":\"$arch\",\"repo_name\":\"$repo_name\"}")
+              # 手动构建JSON条目，确保格式正确
+              entry="{\"target\":\"$found_name\",\"original_name\":\"$pkg_name\",\"pkg_path\":\"$rel_path\",\"repo_url\":\"$repo_url\",\"branch\":\"$branch\",\"arch\":\"$arch\",\"repo_name\":\"$repo_name\"}"
+              matrix_entries+=("$entry")
               echo "添加到矩阵: $pkg_name (实际包名: $found_name, 路径: $rel_path, 架构: $arch)"
             done
           done
@@ -353,8 +391,25 @@ jobs:
             exit 1
           fi
           
-          echo "matrix=[$(IFS=,; echo "${matrix_entries[*]}")]" >> $GITHUB_OUTPUT
-          echo "生成构建矩阵完成，共 ${#matrix_entries[@]} 个构建任务"
+          # 构建有效的JSON数组
+          json_array="["
+          for i in "${!matrix_entries[@]}"; do
+            json_array+="${matrix_entries[$i]}"
+            if [ $i -lt $((${#matrix_entries[@]}-1)) ]; then
+              json_array+=","
+            fi
+          done
+          json_array+="]"
+          
+          # 验证JSON格式
+          if echo "$json_array" | jq empty 2>/dev/null; then
+            echo "matrix=$json_array" >> $GITHUB_OUTPUT
+            echo "生成构建矩阵完成，共 ${#matrix_entries[@]} 个构建任务"
+          else
+            echo "::error::构建矩阵JSON格式无效"
+            echo "无效JSON: $json_array"
+            exit 1
+          fi
   
   build:
     name: Build ${{ matrix.target }} (${{ matrix.arch }})
