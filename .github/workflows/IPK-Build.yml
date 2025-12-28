@@ -259,10 +259,3 @@ jobs:
         with:
           name: ${{ env.model_name }}-${{ env.arch-path }}-${{ matrix.target }}
           path: ${{ env.IPK }}
-
-      - name: Delete workflow runs  
-        uses: Mattraks/delete-workflow-runs@main  
-        continue-on-error: true  
-        with:  
-          retain_days: 1  
-          keep_minimum_runs: 0 
