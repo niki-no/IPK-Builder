@@ -39,8 +39,6 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: 解析输入模式
         id: parse-input
@@ -62,7 +60,6 @@ jobs:
             USE_ARCH_MODE=true
           fi
           echo "use_arch_mode=$USE_ARCH_MODE" >> $GITHUB_OUTPUT
-
       - name: 解析设备架构
         id: parse-model
         if: ${{ !fromJson(steps.parse-input.outputs.use_arch_mode) }}
@@ -97,320 +94,60 @@ jobs:
           [ -z "$FOUND_ARCH" ] && echo "::error::未找到设备对应架构" && exit 1
           echo "model_name=$(echo "$MODEL_INPUT" | tr ' ' '-')" >> $GITHUB_OUTPUT
           echo "arch=$FOUND_ARCH" >> $GITHUB_OUTPUT
-
-      - name: 加载仓库列表
-        id: load-repos
-        run: |
-          declare -a REPOS
-          if [ -f "repo" ]; then
-            echo "使用自定义 repo 文件"
-            while IFS= read -r line || [[ -n "$line" ]]; do
-              line_clean=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/#.*//')
-              if [[ -n "$line_clean" && "$line_clean" == *,* ]]; then
-                REPOS+=("$line_clean")
-                echo "添加仓库: $line_clean"
-              fi
-            done < repo
-          fi
-          
-          if [ ${#REPOS[@]} -eq 0 ]; then
-            echo "使用默认仓库"
-            REPOS=("https://github.com/kiddin9/kwrt-packages,main")
-          fi
-          
-          # 将仓库列表存储为JSON（确保正确的JSON格式）
-          REPO_JSON="["
-          for i in "${!REPOS[@]}"; do
-            IFS=',' read -r repo_url branch <<< "${REPOS[$i]}"
-            # 转义特殊字符
-            repo_url=$(echo "$repo_url" | jq -R .)
-            branch=$(echo "$branch" | jq -R .)
-            REPO_JSON+="{\"url\":$repo_url,\"branch\":$branch}"
-            if [ $i -lt $((${#REPOS[@]}-1)) ]; then
-              REPO_JSON+=","
-            fi
-          done
-          REPO_JSON+="]"
-          
-          echo "repo_json=$REPO_JSON" >> $GITHUB_OUTPUT
-
-      - name: 查找包位置
-        id: find-packages
-        run: |
-          # 解析输入包
-          PACKAGE_INPUT="${{ github.event.inputs.Package }}"
-          if [ -z "$PACKAGE_INPUT" ]; then
-            PKG_SOURCE=$(grep -vE '^#|^$' Build-IPK | tr '\n' ' ')
-          else
-            PKG_SOURCE="$PACKAGE_INPUT"
-          fi
-          
-          IFS=',; ' read -ra PKG_ARRAY <<< "$PKG_SOURCE"
-          echo "需要查找的包: ${PKG_ARRAY[*]}"
-          
-          # 加载仓库信息
-          REPO_JSON='${{ steps.load-repos.outputs.repo_json }}'
-          echo "仓库信息: $REPO_JSON"
-          
-          # 克隆并查找包
-          declare -a FOUND_PACKAGES_RAW
-          
-          # 函数：获取包的实际名称
-          get_package_name() {
-            local pkg_dir="$1"
-            local repo_name="$2"
-            local original_pkg="$3"
-            
-            # 获取相对路径
-            local rel_path=$(realpath --relative-to="$repo_name" "$pkg_dir")
-            
-            # 如果相对路径是 "."，说明整个仓库就是一个包
-            if [ "$rel_path" = "." ]; then
-              # 尝试从Makefile中提取包名
-              if [ -f "$pkg_dir/Makefile" ]; then
-                local pkg_name=$(grep -E '^PKG_NAME\s*[:?]=' "$pkg_dir/Makefile" 2>/dev/null | head -1 | sed -E 's/^PKG_NAME\s*[:?]=//' | xargs)
-                if [ -n "$pkg_name" ]; then
-                  echo "$pkg_name"
-                  return 0
-                fi
-              fi
-              # 使用仓库名作为包名
-              local repo_base=$(basename "$repo_name")
-              echo "$repo_base"
-            else
-              # 正常情况：使用目录名
-              echo "$(basename "$rel_path")"
-            fi
-          }
-          
-          # 函数：在目录中查找包
-          find_package_in_dir() {
-            local repo_dir="$1"
-            local pkg_name="$2"
-            
-            # 尝试多种可能的路径模式
-            local patterns=(
-              "$pkg_name"
-              "luci/applications/$pkg_name"
-              "applications/$pkg_name"
-              "luci/$pkg_name"
-              "packages/$pkg_name"
-              "package/$pkg_name"
-              "*/$pkg_name"
-            )
-            
-            for pattern in "${patterns[@]}"; do
-              local search_path="$repo_dir/$pattern"
-              if [ -d "$search_path" ] && [ -f "$search_path/Makefile" ]; then
-                echo "$search_path"
-                return 0
-              fi
-            done
-            
-            # 如果直接路径没找到，尝试递归查找
-            local found_dir=$(find "$repo_dir" -type f -path "*/$pkg_name/Makefile" -printf "%h\n" 2>/dev/null | head -1)
-            if [ -n "$found_dir" ]; then
-              echo "$found_dir"
-              return 0
-            fi
-            
-            # 更宽松的查找：目录名包含包名关键词
-            local pkg_keyword=$(echo "$pkg_name" | sed 's/^luci-app-//;s/^luci-//')
-            if [ -n "$pkg_keyword" ]; then
-              found_dir=$(find "$repo_dir" -type d -name "*${pkg_keyword}*" -exec test -f "{}/Makefile" \; -print 2>/dev/null | head -1)
-              if [ -n "$found_dir" ]; then
-                echo "$found_dir"
-                return 0
-              fi
-            fi
-            
-            # 特殊处理：检查整个仓库是否就是一个包（Makefile在仓库根目录）
-            if [ -f "$repo_dir/Makefile" ]; then
-              # 检查Makefile中是否包含有效的包定义
-              if grep -qE '^PKG_NAME\s*[:?]=' "$repo_dir/Makefile" 2>/dev/null || 
-                 grep -qE '^include.*build' "$repo_dir/Makefile" 2>/dev/null; then
-                echo "$repo_dir"
-                return 0
-              fi
-            fi
-            
-            return 1
-          }
-          
-          # 解析JSON获取仓库列表
-          REPO_COUNT=$(echo "$REPO_JSON" | jq -r '. | length' 2>/dev/null || echo "0")
-          if [ "$REPO_COUNT" = "0" ]; then
-            echo "无法解析仓库JSON"
-            echo "原始JSON: $REPO_JSON"
-            exit 1
-          fi
-          
-          for i in $(seq 0 $(($REPO_COUNT - 1))); do
-            repo_url=$(echo "$REPO_JSON" | jq -r ".[$i].url")
-            branch=$(echo "$REPO_JSON" | jq -r ".[$i].branch")
-            repo_name=$(basename "$repo_url" .git)
-            
-            echo "处理仓库: $repo_name ($repo_url, 分支: $branch)"
-            
-            # 克隆仓库
-            if [ ! -d "$repo_name" ]; then
-              echo "克隆仓库: $repo_url (分支: $branch)"
-              git clone -b "$branch" --depth=1 "$repo_url" "$repo_name" || {
-                echo "::warning::克隆仓库失败: $repo_url"
-                continue
-              }
-            else
-              echo "仓库已存在: $repo_name"
-            fi
-            
-            # 查找包
-            for pkg in "${PKG_ARRAY[@]}"; do
-              echo "在仓库 $repo_name 中查找包: $pkg"
-              
-              # 检查包是否已找到
-              already_found=false
-              for found_pkg in "${FOUND_PACKAGES_RAW[@]}"; do
-                if echo "$found_pkg" | grep -q "\"pkg_name\":\"$pkg\""; then
-                  already_found=true
-                  break
-                fi
-              done
-              
-              if [ "$already_found" = true ]; then
-                echo "包 $pkg 已在其他仓库中找到，跳过"
-                continue
-              fi
-              
-              # 查找包
-              pkg_dir=$(find_package_in_dir "$repo_name" "$pkg")
-              
-              if [ -n "$pkg_dir" ]; then
-                echo "找到包 $pkg 在: $pkg_dir"
-                
-                # 获取包的实际名称
-                pkg_base_name=$(get_package_name "$pkg_dir" "$repo_name" "$pkg")
-                echo "包实际名称: $pkg_base_name"
-                
-                # 获取相对路径
-                rel_path=$(realpath --relative-to="$repo_name" "$pkg_dir")
-                
-                # 构建JSON字符串（手动构建，避免特殊字符问题）
-                entry="{\"pkg_name\":\"$pkg\",\"found_name\":\"$pkg_base_name\",\"rel_path\":\"$rel_path\",\"repo_url\":\"$repo_url\",\"branch\":\"$branch\",\"repo_name\":\"$repo_name\"}"
-                FOUND_PACKAGES_RAW+=("$entry")
-              else
-                echo "未在仓库 $repo_name 中找到包: $pkg"
-              fi
-            done
-          done
-          
-          # 输出找到的包
-          echo "总共找到 ${#FOUND_PACKAGES_RAW[@]} 个包"
-          if [ ${#FOUND_PACKAGES_RAW[@]} -gt 0 ]; then
-            # 构建有效的JSON数组
-            json_array="["
-            for i in "${!FOUND_PACKAGES_RAW[@]}"; do
-              json_array+="${FOUND_PACKAGES_RAW[$i]}"
-              if [ $i -lt $((${#FOUND_PACKAGES_RAW[@]}-1)) ]; then
-                json_array+=","
-              fi
-            done
-            json_array+="]"
-            
-            # 验证JSON格式
-            if echo "$json_array" | jq empty 2>/dev/null; then
-              echo "found_packages=$json_array" >> $GITHUB_OUTPUT
-              echo "有效的包JSON: $json_array"
-            else
-              echo "::error::生成的JSON格式无效"
-              echo "原始数据: $json_array"
-              exit 1
-            fi
-          else
-            echo "::warning::未找到任何包"
-          fi
-
       - name: 生成构建矩阵
         id: set-matrix
         run: |
-          # 获取架构
           if ${{ steps.parse-input.outputs.use_arch_mode }}; then
             IFS=' ' read -ra ARCH_ARRAY <<< "${{ steps.parse-input.outputs.archs }}"
           else
             ARCH_ARRAY=("${{ steps.parse-model.outputs.arch }}")  
           fi
-          
-          echo "架构列表: ${ARCH_ARRAY[*]}"
-          
-          # 获取找到的包
-          FOUND_PACKAGES_JSON='${{ steps.find-packages.outputs.found_packages }}'
-          echo "原始包JSON: $FOUND_PACKAGES_JSON"
-          
-          if [ -z "$FOUND_PACKAGES_JSON" ] || [ "$FOUND_PACKAGES_JSON" = "[]" ]; then
-            echo "::error::无有效包可构建"
-            exit 1
+          PACKAGE_INPUT="${{ github.event.inputs.Package }}"
+          PKG_SOURCE="$PACKAGE_INPUT"
+          if [ -z "$PKG_SOURCE" ]; then
+            PKG_SOURCE=$(grep -vE '^#|^$' Build-IPK | tr '\n' ' ')
           fi
-          
-          # 验证JSON格式
-          if ! echo "$FOUND_PACKAGES_JSON" | jq empty 2>/dev/null; then
-            echo "::error::包JSON格式无效"
-            echo "无效JSON: $FOUND_PACKAGES_JSON"
-            exit 1
+          IFS=',; ' read -ra PKG_ARRAY <<< "$PKG_SOURCE"
+          declare -a REPOS
+          if [ -f "repo" ]; then
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              line_clean=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/#.*//')
+              if [[ -n "$line_clean" && "$line_clean" == *,* ]]; then
+                REPOS+=("$line_clean")
+              fi
+            done < repo
           fi
-          
-          # 解析找到的包
-          PKG_COUNT=$(echo "$FOUND_PACKAGES_JSON" | jq '. | length')
-          echo "找到 $PKG_COUNT 个包"
-          
-          # 生成构建矩阵
+          if [ ${#REPOS[@]} -eq 0 ]; then
+            REPOS=("https://github.com/kiddin9/kwrt-packages,main")
+          fi
+          for repo_entry in "${REPOS[@]}"; do
+            IFS=',' read -r repo_url branch <<< "$repo_entry"
+            repo_name=$(basename "$repo_url" .git)
+            git clone -b "$branch" --depth=1 "$repo_url" "$repo_name"
+          done
           declare -a matrix_entries
-          
-          for i in $(seq 0 $(($PKG_COUNT - 1))); do
-            pkg_name=$(echo "$FOUND_PACKAGES_JSON" | jq -r ".[$i].pkg_name")
-            found_name=$(echo "$FOUND_PACKAGES_JSON" | jq -r ".[$i].found_name")
-            rel_path=$(echo "$FOUND_PACKAGES_JSON" | jq -r ".[$i].rel_path")
-            repo_url=$(echo "$FOUND_PACKAGES_JSON" | jq -r ".[$i].repo_url")
-            branch=$(echo "$FOUND_PACKAGES_JSON" | jq -r ".[$i].branch")
-            repo_name=$(echo "$FOUND_PACKAGES_JSON" | jq -r ".[$i].repo_name")
-            
-            # 验证包名有效性
-            if [ -z "$found_name" ] || [ "$found_name" = "." ] || [ "$found_name" = ".." ]; then
-              echo "::warning::包 $pkg_name 的实际名称无效，使用原始名称"
-              found_name="$pkg_name"
-            fi
-            
-            for arch in "${ARCH_ARRAY[@]}"; do
-              # 手动构建JSON条目，确保格式正确
-              entry="{\"target\":\"$found_name\",\"original_name\":\"$pkg_name\",\"pkg_path\":\"$rel_path\",\"repo_url\":\"$repo_url\",\"branch\":\"$branch\",\"arch\":\"$arch\",\"repo_name\":\"$repo_name\"}"
-              matrix_entries+=("$entry")
-              echo "添加到矩阵: $pkg_name (实际包名: $found_name, 路径: $rel_path, 架构: $arch)"
+          for arch in "${ARCH_ARRAY[@]}"; do
+            for pkg in "${PKG_ARRAY[@]}"; do
+              found=false
+              for repo_entry in "${REPOS[@]}"; do
+                IFS=',' read -r repo_url branch <<< "$repo_entry"
+                repo_name=$(basename "$repo_url" .git)
+                if [ -d "$repo_name/$pkg" ]; then
+                  matrix_entries+=("{\"target\":\"$pkg\",\"repo_url\":\"$repo_url\",\"branch\":\"$branch\",\"arch\":\"$arch\"}")
+                  found=true
+                  break
+                fi
+              done
+              if [ "$found" = false ]; then
+                echo "::warning::未在任何仓库中找到包: $pkg"
+              fi
             done
           done
-          
           if [ ${#matrix_entries[@]} -eq 0 ]; then
             echo "::error::无有效包可构建"
             exit 1
           fi
-          
-          # 构建有效的JSON数组
-          json_array="["
-          for i in "${!matrix_entries[@]}"; do
-            json_array+="${matrix_entries[$i]}"
-            if [ $i -lt $((${#matrix_entries[@]}-1)) ]; then
-              json_array+=","
-            fi
-          done
-          json_array+="]"
-          
-          # 验证JSON格式
-          if echo "$json_array" | jq empty 2>/dev/null; then
-            echo "matrix=$json_array" >> $GITHUB_OUTPUT
-            echo "生成构建矩阵完成，共 ${#matrix_entries[@]} 个构建任务"
-          else
-            echo "::error::构建矩阵JSON格式无效"
-            echo "无效JSON: $json_array"
-            exit 1
-          fi
-  
+          echo "matrix=[$(IFS=,; echo "${matrix_entries[*]}")]" >> $GITHUB_OUTPUT
   build:
     name: Build ${{ matrix.target }} (${{ matrix.arch }})
     runs-on: ubuntu-22.04
@@ -437,20 +174,17 @@ jobs:
             libelf-dev device-tree-compiler libgmp3-dev libmpc-dev  
           git clone --depth=1 https://github.com/openwrt-dev/po2lmo
           (cd po2lmo && sudo make && sudo make install)
-
       - name: 设置变量
         id: ENV
         run: |
           echo "date=$(date +'%m.%d')" >> $GITHUB_ENV
           echo "arch-path=$(echo ${{ matrix.arch }} | tr '/' '-')" >> $GITHUB_ENV  # 直接使用矩阵中的arch值
-
       - name: 准备SDK
         run: |
           SDK_URL1="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ env.arch_path }}/immortalwrt-sdk-24.10-SNAPSHOT-${{ env.arch-path }}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
           SDK_URL2="https://downloads.immortalwrt.org/releases/24.10-SNAPSHOT/targets/${{ env.arch_path }}/immortalwrt-sdk-24.10-SNAPSHOT-${{ env.arch-path }}_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst"
           wget --spider -q "$SDK_URL1" && wget "$SDK_URL1" || wget "$SDK_URL2"
           mkdir OpenWrt-${{ env.arch-path }} && tar -I 'zstd -d' -xf immortalwrt-*.tar.zst -C OpenWrt-${{ env.arch-path }} --strip-components 1 && rm immortalwrt-*.tar.zst
-
       - name: 克隆项目
         run: |
           shopt -s extglob
@@ -459,28 +193,9 @@ jobs:
           
           REPO_URL="${{ matrix.repo_url }}"
           BRANCH="${{ matrix.branch }}"
-          REPO_NAME=$(basename "$REPO_URL" .git)
-          
-          # 克隆仓库到临时目录
-          git clone -b "$BRANCH" --depth=1 "$REPO_URL" temp_repo
-          
-          # 根据相对路径处理包文件
-          if [ "${{ matrix.pkg_path }}" = "." ]; then
-            # 整个仓库就是一个包
-            echo "处理单包仓库: $REPO_NAME"
-            # 将整个仓库内容复制到package目录
-            cp -rf temp_repo/* package/
-          else
-            # 正常的多包仓库
-            echo "处理多包仓库中的包: ${{ matrix.pkg_path }}"
-            # 将仓库根目录复制到packages目录
-            mkdir -p package/packages
-            cp -rf temp_repo/* package/packages/
-          fi
-          
-          # 清理临时目录
-          rm -rf temp_repo
-          
+          git clone -b "$BRANCH" --depth=1 "$REPO_URL" packages
+          mv packages/* package/ && rm -rf packages
+  
           if [ -f "${{ matrix.target }}" ]; then  
             chmod +x "${{ matrix.target }}"  
             /bin/bash ./"${{ matrix.target }}"  
@@ -501,15 +216,7 @@ jobs:
           rm -rf feeds/base/package/kernel/!(cryptodev-linux)
           sed -i '/	refresh_config();/d' scripts/feeds
 
-          # 安装包（根据仓库结构调整）
-          if [ "${{ matrix.pkg_path }}" = "." ]; then
-            # 单包仓库：直接安装包名
-            ./scripts/feeds install ${{ matrix.target }}
-          else
-            # 多包仓库：可能需要带路径
-            ./scripts/feeds install -p packages ${{ matrix.target }}
-          fi
-          
+          ./scripts/feeds install ${{ matrix.target }}
           rm -rf feeds/packages/lang/golang
           git clone https://github.com/sbwml/packages_lang_golang -b 24.x feeds/packages/lang/golang
           echo "CONFIG_PACKAGE_${{ matrix.target }}=y" >> .config
@@ -523,15 +230,7 @@ jobs:
       - name: 开始编译
         run: |
           cd OpenWrt-${{ env.arch-path }}
-          # 根据包路径调整编译目标
-          if [ "${{ matrix.pkg_path }}" = "." ]; then
-            # 单包仓库
-            make package/${{ matrix.target }}/compile -j$(nproc) V=s
-          else
-            # 多包仓库
-            make package/packages/${{ matrix.target }}/compile -j$(nproc) V=s
-          fi
-
+          make package/${{ matrix.target }}/compile -j$(nproc) V=s
       - name: 准备 ipk
         run: |
           cd OpenWrt-${{ env.arch-path }}
